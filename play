@@ -1,0 +1,169 @@
+#!/usr/bin/env python
+import pathlib
+from pathlib import Path
+from urllib import parse
+import subprocess
+import sys
+import random
+from os.path import exists
+
+'''
+A sorting method for songs. It works by pushing file names with more matches up higher.
+'''
+def valOfResult(song):
+    val = 0
+    lowerSong = song.lower()
+    for arg in sys.argv[1:]:
+        # Removes the playlist extension for this case
+        if arg.endswith(".m3u"):
+            arg = arg[:-4]
+        argLen = len(arg)
+        lowerArg = arg.lower()
+        lastIndex = 0
+        while lowerArg in lowerSong[lastIndex:]:
+            val -= 1
+            #print('\t' + lowerSong[0:lastIndex] + lowerSong.upper()[lastIndex:lastIndex + argLen] + lowerSong[lastIndex + argLen:])
+            lastIndex += lowerSong[lastIndex:].index(lowerArg) + argLen
+    #print("%s got %d hits" % (song, val))
+    return val
+
+'''
+Compiles all arguments in the argument list into a Unix Find search term
+'''
+def appendSearchArguments(argList, args):
+    notArgs = []
+    playlistArgs=[]
+    if len(args) > 0:
+        argList.append("(")
+        argList.append("(")
+        for arg in args:
+            if arg.startswith("!"):
+                notArgs.append(arg[1:])
+            elif arg.endswith(".m3u"):
+                playlistArgs.append(arg[:-4])
+            elif arg == "AND" or arg == "and" or arg == "-and" or arg == "-a" or arg =="--and" or arg == "&&":
+                argList.pop()
+                argList.append("-and")
+            else:
+                argList.append("-ipath")
+                if arg.endswith(".m3u"):
+                    argList.append("*" + arg[:-4] + "*.m3u")
+                else:
+                    argList.append("*" + arg + "*")
+                argList.append("-or")
+        if argList[len(argList) - 1] == "-or":
+            argList.pop()
+        argList.append(")")
+        if len(notArgs) > 0:
+            argList.append("-and")
+            argList.append("(")
+            for arg in notArgs:
+                argList.append("-not")
+                argList.append("-ipath")
+                argList.append("*" + arg + "*")
+                argList.append("-and")
+            argList.pop()
+            argList.append(")")
+        
+        argList.append("-and")
+        appendFileTypes(argList)
+        argList.append(")")
+        
+        if len(playlistArgs) > 0:
+            argList.append("-or")
+            argList.append("(")
+            
+            for playlist in playlistArgs:
+                argList.append("-ipath")
+                argList.append("*" + playlist + "*")
+                argList.append("-or")
+            argList.pop()
+            
+            argList.append(")")
+            argList.append("-and")
+            argList.append("-iname")
+            argList.append("*.m3u")
+
+'''
+Adds information about what files are supported
+'''
+def appendFileTypes(argList):
+    types = ["mp3", "flac", "ogg", "wav", "m4a"]
+    if len(types) <= 0:
+        return
+    argList.append("(")
+    for fileType in types:
+        argList.append("-iname")
+        argList.append("*." + fileType)
+        argList.append("-or")
+    argList.pop()
+    argList.append(")")
+
+'''
+Merges certain words into one. This is helpful for voice commands
+'''
+def mergeWords(argList):
+    i = 0
+    quoting = False
+    while i < len(argList):
+        # Merge underscore for handling later
+        if quoting:
+            if argList[i] != "unquote":
+                argList[i - 1] = argList[i - 1] + " " + argList[i]
+            else:
+                quoting = False
+            del argList[i]
+            i -= 1
+        elif argList[i] == "quote":
+            quoting = True
+            del argList[i]
+        elif i < len(argList) - 1 and argList[i] == "under" and argList[i + 1] == "score":
+            argList[i] = "underscore"
+            del argList[i + 1]
+        if argList[i] == "dot":
+            argList[i - 1] = argList[i - 1] + "."
+            del argList[i]
+            i -= 1
+        elif argList[i] == "underscore":
+            argList[i - 1] = argList[i - 1] + "_"
+            del argList[i]
+            i -= 1
+        elif argList[i - 1].endswith(".") or argList[i - 1].endswith("_"):
+            argList[i - 1] = argList[i - 1] + argList[i]
+            del argList[i]
+            i -= 1
+        i += 1
+            
+    return argList
+
+if __name__ == "__main__":
+    # Checks if VLC is installed
+    exists = subprocess.call("command -v vlc >> /dev/null", shell=True)
+    if exists:
+        print("VLC Media Player is not installed", file=sys.stderr)
+        exit(1)
+    
+    mergeWords(sys.argv)
+    findArgs = ["find", "./"]
+    appendSearchArguments(findArgs, sys.argv[1:])
+    print(" ".join(findArgs))
+    print()
+    process = subprocess.Popen(findArgs, stdout=subprocess.PIPE)
+    output, error = process.communicate()
+    files = output.decode().split("\n")
+    # Remove any empty things
+    while "" in files:
+        files.remove("")
+    if len(files) == 0:
+        print("No files found", file=sys.stderr)
+        exit(1)
+    random.shuffle(files)
+    files.sort(key=valOfResult)
+    for song in files:
+        print(song)
+
+    vlcArgs = ["cvlc"]
+    vlcArgs += files
+    #print(" ".join(vlcArgs))
+    print()
+    subprocess.call(vlcArgs)
